@@ -3,11 +3,12 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV RUN_DATABASE_INIT=false
+ENV ACCESS_ODBC_DRIVER=MDBTools
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc g++ unixodbc-dev \
+    && apt-get install -y --no-install-recommends gcc g++ unixodbc-dev odbc-mdbtools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
