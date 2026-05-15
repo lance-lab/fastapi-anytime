@@ -4,8 +4,9 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*.*.*"
+  release:
+    types:
+      - published
   workflow_dispatch:
 
 env:
@@ -40,6 +41,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-
             type=ref,event=tag
+            type=ref,event=branch
 
       - name: Build and push
         uses: docker/build-push-action@v6
