@@ -89,6 +89,10 @@ def quote_access_identifier(identifier: str) -> str:
     return f"[{identifier.replace(']', ']]')}]"
 
 
+def app_identifier_list(identifiers: list[str]) -> str:
+    return ", ".join(identifiers)
+
+
 def access_sql_literal(value: Any) -> str:
     if value is None:
         return "NULL"
@@ -117,6 +121,15 @@ def read_table_rows(table_name: str, limit: int = 100) -> list[dict[str, Any]]:
     return [dict(zip(columns, row)) for row in rows]
 
 
+def fetch_created_id(cursor, table_name: str) -> int:
+    try:
+        cursor.execute("SELECT @@IDENTITY")
+    except pyodbc.Error:
+        cursor.execute(f"SELECT MAX(id) FROM {table_name}")
+
+    return cursor.fetchone()[0]
+
+
 def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
     table_name = "organizations"
     ensure_table_exists(table_name)
@@ -131,18 +144,15 @@ def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
         "state",
         "postal_code",
     ]
-    timestamp_columns = ["created_at", "updated_at"]
-    all_columns = columns + timestamp_columns
-    column_sql = ", ".join(quote_access_identifier(column) for column in all_columns)
+    column_sql = app_identifier_list(columns)
     value_sql = ", ".join(access_sql_literal(organization.get(column)) for column in columns)
 
     with access_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({value_sql}, Now(), Now())",
+            f"INSERT INTO {table_name} ({column_sql}) VALUES ({value_sql})",
         )
-        cursor.execute("SELECT @@IDENTITY")
-        created_id = cursor.fetchone()[0]
+        created_id = fetch_created_id(cursor, table_name)
         connection.commit()
 
     return {"id": created_id, **organization}
@@ -158,18 +168,15 @@ def create_my_tender(my_tender: dict[str, Any]) -> dict[str, Any]:
         "tender_type",
         "contracting_authority_id",
     ]
-    timestamp_columns = ["created_at", "updated_at"]
-    all_columns = columns + timestamp_columns
-    column_sql = ", ".join(quote_access_identifier(column) for column in all_columns)
+    column_sql = app_identifier_list(columns)
     value_sql = ", ".join(access_sql_literal(my_tender.get(column)) for column in columns)
 
     with access_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({value_sql}, Now(), Now())",
+            f"INSERT INTO {table_name} ({column_sql}) VALUES ({value_sql})",
         )
-        cursor.execute("SELECT @@IDENTITY")
-        created_id = cursor.fetchone()[0]
+        created_id = fetch_created_id(cursor, table_name)
         connection.commit()
 
     return {"id": created_id, **my_tender}
@@ -259,9 +266,9 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
         try:
             cursor.execute(
                 f"""
-                INSERT INTO [credentials]
-                    ([username], [password_hash], [created_at], [updated_at])
-                VALUES ({access_sql_literal(username)}, {access_sql_literal(password_hash)}, Now(), Now())
+                INSERT INTO credentials
+                    (username, password_hash)
+                VALUES ({access_sql_literal(username)}, {access_sql_literal(password_hash)})
                 """,
             )
         except pyodbc.Error as exc:
@@ -271,8 +278,7 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
                     detail=f"Credential already exists for username: {username}",
                 ) from exc
             raise
-        cursor.execute("SELECT @@IDENTITY")
-        created_id = cursor.fetchone()[0]
+        created_id = fetch_created_id(cursor, "credentials")
         connection.commit()
 
     return {"id": created_id, "username": username}
