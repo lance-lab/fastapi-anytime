@@ -1,7 +1,4 @@
-import base64
-import hashlib
 import os
-import secrets
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,6 +6,7 @@ from typing import Any, Iterator
 
 from fastapi import HTTPException, status
 
+from app.auth import hash_password
 from app.config import SQLITE_DB_PATH, SQLITE_DB_PATH_ENV
 
 
@@ -106,17 +104,60 @@ def create_row(table_name: str, values: dict[str, Any]) -> int:
     column_sql = ", ".join(quote_sqlite_identifier(column) for column in columns)
     placeholder_sql = ", ".join("?" for _ in columns)
 
-    with database_connection() as connection:
-        cursor = connection.execute(
-            f"""
-            INSERT INTO {quote_sqlite_identifier(table_name)}
-                ({column_sql})
-            VALUES ({placeholder_sql})
-            """,
-            tuple(values.values()),
+    try:
+        with database_connection() as connection:
+            cursor = connection.execute(
+                f"""
+                INSERT INTO {quote_sqlite_identifier(table_name)}
+                    ({column_sql})
+                VALUES ({placeholder_sql})
+                """,
+                tuple(values.values()),
+            )
+            connection.commit()
+            return cursor.lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise constraint_error_response(table_name, exc) from exc
+
+
+def constraint_error_response(table_name: str, exc: sqlite3.IntegrityError) -> HTTPException:
+    message = str(exc)
+    lower_message = message.lower()
+
+    if "unique constraint failed" in lower_message:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"{table_name} record already exists.",
+                "constraint": message,
+            },
         )
-        connection.commit()
-        return cursor.lastrowid
+
+    if "foreign key constraint failed" in lower_message:
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"{table_name} references a record that does not exist.",
+                "constraint": message,
+            },
+        )
+
+    if "not null constraint failed" in lower_message:
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"{table_name} is missing a required value.",
+                "constraint": message,
+            },
+        )
+
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "message": f"{table_name} violates a database constraint.",
+            "constraint": message,
+        },
+    )
 
 
 def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
@@ -210,16 +251,10 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
     ensure_table_exists("credentials")
     password_hash = hash_password(password)
 
-    try:
-        created_id = create_row(
-            "credentials",
-            {"username": username, "password_hash": password_hash},
-        )
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Credential already exists for username: {username}",
-        ) from exc
+    created_id = create_row(
+        "credentials",
+        {"username": username, "password_hash": password_hash},
+    )
 
     return {"id": created_id, "username": username}
 
@@ -234,31 +269,3 @@ def list_credentials() -> dict[str, str]:
 
     return {row["username"]: row["password_hash"] for row in rows}
 
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    iterations = 210_000
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
-    encoded_salt = base64.b64encode(salt).decode("ascii")
-    encoded_digest = base64.b64encode(digest).decode("ascii")
-    return f"pbkdf2_sha256${iterations}${encoded_salt}${encoded_digest}"
-
-
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        algorithm, iterations, encoded_salt, encoded_digest = password_hash.split("$")
-        if algorithm != "pbkdf2_sha256":
-            return False
-
-        salt = base64.b64decode(encoded_salt.encode("ascii"))
-        expected_digest = base64.b64decode(encoded_digest.encode("ascii"))
-        actual_digest = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt,
-            int(iterations),
-        )
-    except (ValueError, TypeError):
-        return False
-
-    return secrets.compare_digest(actual_digest, expected_digest)
