@@ -3,6 +3,8 @@ import hashlib
 import os
 import secrets
 from contextlib import contextmanager
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -87,6 +89,22 @@ def quote_access_identifier(identifier: str) -> str:
     return f"[{identifier.replace(']', ']]')}]"
 
 
+def access_sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int | float | Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return f"#{value:%Y-%m-%d %H:%M:%S}#"
+    if isinstance(value, date):
+        return f"#{value:%Y-%m-%d}#"
+
+    escaped_value = str(value).replace("'", "''")
+    return f"'{escaped_value}'"
+
+
 def read_table_rows(table_name: str, limit: int = 100) -> list[dict[str, Any]]:
     ensure_table_exists(table_name)
 
@@ -116,14 +134,12 @@ def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
     timestamp_columns = ["created_at", "updated_at"]
     all_columns = columns + timestamp_columns
     column_sql = ", ".join(quote_access_identifier(column) for column in all_columns)
-    placeholders = ", ".join("?" for _ in columns)
-    values = [organization.get(column) for column in columns]
+    value_sql = ", ".join(access_sql_literal(organization.get(column)) for column in columns)
 
     with access_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({placeholders}, Now(), Now())",
-            *values,
+            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({value_sql}, Now(), Now())",
         )
         cursor.execute("SELECT @@IDENTITY")
         created_id = cursor.fetchone()[0]
@@ -145,14 +161,12 @@ def create_my_tender(my_tender: dict[str, Any]) -> dict[str, Any]:
     timestamp_columns = ["created_at", "updated_at"]
     all_columns = columns + timestamp_columns
     column_sql = ", ".join(quote_access_identifier(column) for column in all_columns)
-    placeholders = ", ".join("?" for _ in columns)
-    values = [my_tender.get(column) for column in columns]
+    value_sql = ", ".join(access_sql_literal(my_tender.get(column)) for column in columns)
 
     with access_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({placeholders}, Now(), Now())",
-            *values,
+            f"INSERT INTO {quote_access_identifier(table_name)} ({column_sql}) VALUES ({value_sql}, Now(), Now())",
         )
         cursor.execute("SELECT @@IDENTITY")
         created_id = cursor.fetchone()[0]
@@ -168,7 +182,7 @@ def read_my_tender(tender_id: int) -> dict[str, Any]:
     with access_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT
                 mt.[id] AS tender_id,
                 mt.[item_number] AS tender_item_number,
@@ -193,9 +207,8 @@ def read_my_tender(tender_id: int) -> dict[str, Any]:
             FROM [my_tenders] AS mt
             LEFT JOIN [organizations] AS o
                 ON mt.[contracting_authority_id] = o.[id]
-            WHERE mt.[id] = ?
+            WHERE mt.[id] = {access_sql_literal(tender_id)}
             """,
-            tender_id,
         )
         row = cursor.fetchone()
         columns = [column[0] for column in cursor.description]
@@ -245,13 +258,11 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
         cursor = connection.cursor()
         try:
             cursor.execute(
-                """
+                f"""
                 INSERT INTO [credentials]
                     ([username], [password_hash], [created_at], [updated_at])
-                VALUES (?, ?, Now(), Now())
+                VALUES ({access_sql_literal(username)}, {access_sql_literal(password_hash)}, Now(), Now())
                 """,
-                username,
-                password_hash,
             )
         except pyodbc.Error as exc:
             if is_unique_constraint_error(exc):
