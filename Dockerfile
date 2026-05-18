@@ -2,14 +2,10 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV RUN_DATABASE_INIT=false
-ENV ACCESS_ODBC_DRIVER=MDBTools
+ENV RUN_DATABASE_INIT=true
+ENV SQLITE_DB_PATH=/data/database.sqlite3
 
 WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc g++ unixodbc-dev odbc-mdbtools \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

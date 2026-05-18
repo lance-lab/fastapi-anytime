@@ -15,9 +15,9 @@ from app.database import (
     read_table_rows,
 )
 from app.database_init import (
-    ensure_access_database_file,
     ensure_applicant_authorities_table,
     ensure_credentials_table,
+    ensure_database_file,
     ensure_my_tenders_table,
     ensure_organizations_table,
 )
@@ -57,7 +57,7 @@ class CredentialCreate(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if RUN_DATABASE_INIT:
-        ensure_access_database_file()
+        ensure_database_file()
         ensure_organizations_table()
         ensure_my_tenders_table()
         ensure_applicant_authorities_table()
@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Access Database API",
+    title="SQLite Database API",
     lifespan=lifespan,
     dependencies=[Depends(require_basic_auth)],
 )

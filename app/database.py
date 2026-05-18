@@ -2,29 +2,22 @@ import base64
 import hashlib
 import os
 import secrets
+import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
-import pyodbc
 from fastapi import HTTPException, status
 
-from app.config import (
-    ACCESS_DB_PATH,
-    ACCESS_DB_PATH_ENV,
-    ACCESS_ODBC_DRIVER_ENV,
-    DEFAULT_ACCESS_ODBC_DRIVER,
-)
+from app.config import SQLITE_DB_PATH, SQLITE_DB_PATH_ENV
 
 
 def resolve_database_path() -> Path:
-    configured_path = os.getenv(ACCESS_DB_PATH_ENV, ACCESS_DB_PATH)
+    configured_path = os.getenv(SQLITE_DB_PATH_ENV, SQLITE_DB_PATH)
     if not configured_path:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Set {ACCESS_DB_PATH_ENV} to the path of your .accdb or .mdb file.",
+            detail=f"Set {SQLITE_DB_PATH_ENV} to the path of your SQLite database file.",
         )
 
     return Path(configured_path).expanduser()
@@ -32,49 +25,60 @@ def resolve_database_path() -> Path:
 
 def get_database_path() -> Path:
     database_path = resolve_database_path()
-    if not database_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Access database file was not found: {database_path}",
-        )
-
+    database_path.parent.mkdir(parents=True, exist_ok=True)
     return database_path
 
 
-def build_connection_string(database_path: Path) -> str:
-    driver = os.getenv(ACCESS_ODBC_DRIVER_ENV, DEFAULT_ACCESS_ODBC_DRIVER)
-    return f"DRIVER={{{driver}}};DBQ={database_path};"
-
-
 @contextmanager
-def access_connection() -> Iterator[pyodbc.Connection]:
+def database_connection() -> Iterator[sqlite3.Connection]:
     try:
-        connection = pyodbc.connect(build_connection_string(get_database_path()))
-    except pyodbc.Error as exc:
+        connection = sqlite3.connect(get_database_path())
+    except sqlite3.Error as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not connect to Access database: {exc}",
+            detail=f"Could not connect to SQLite database: {exc}",
         ) from exc
 
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
     try:
         yield connection
     finally:
         connection.close()
 
 
+def quote_sqlite_identifier(identifier: str) -> str:
+    return f'"{identifier.replace(chr(34), chr(34) + chr(34))}"'
+
+
 def list_user_tables() -> list[str]:
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        tables = [
-            row.table_name
-            for row in cursor.tables(tableType="TABLE")
-            if not row.table_name.startswith("MSys")
-        ]
-    return sorted(tables)
+    with database_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+                AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """
+        ).fetchall()
+
+    return [row["name"] for row in rows]
 
 
 def table_exists(table_name: str) -> bool:
-    return table_name.lower() in {table.lower() for table in list_user_tables()}
+    with database_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+                AND lower(name) = lower(?)
+            """,
+            (table_name,),
+        ).fetchone()
+
+    return row is not None
 
 
 def ensure_table_exists(table_name: str) -> None:
@@ -85,99 +89,46 @@ def ensure_table_exists(table_name: str) -> None:
         )
 
 
-def quote_access_identifier(identifier: str) -> str:
-    return f"[{identifier.replace(']', ']]')}]"
-
-
-def app_identifier_list(identifiers: list[str]) -> str:
-    return ", ".join(identifiers)
-
-
-def access_sql_literal(value: Any) -> str:
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, int | float | Decimal):
-        return str(value)
-    if isinstance(value, datetime):
-        return f"#{value:%Y-%m-%d %H:%M:%S}#"
-    if isinstance(value, date):
-        return f"#{value:%Y-%m-%d}#"
-
-    escaped_value = str(value).replace("'", "''")
-    return f"'{escaped_value}'"
-
-
 def read_table_rows(table_name: str, limit: int = 100) -> list[dict[str, Any]]:
     ensure_table_exists(table_name)
 
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(f"SELECT TOP {limit} * FROM {quote_access_identifier(table_name)}")
-        columns = [column[0] for column in cursor.description]
-        rows = cursor.fetchall()
+    with database_connection() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM {quote_sqlite_identifier(table_name)} LIMIT ?",
+            (limit,),
+        ).fetchall()
 
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(row) for row in rows]
 
 
-def fetch_created_id(cursor, table_name: str) -> int:
-    try:
-        cursor.execute("SELECT @@IDENTITY")
-    except pyodbc.Error:
-        cursor.execute(f"SELECT MAX(id) FROM {table_name}")
+def create_row(table_name: str, values: dict[str, Any]) -> int:
+    columns = list(values)
+    column_sql = ", ".join(quote_sqlite_identifier(column) for column in columns)
+    placeholder_sql = ", ".join("?" for _ in columns)
 
-    return cursor.fetchone()[0]
+    with database_connection() as connection:
+        cursor = connection.execute(
+            f"""
+            INSERT INTO {quote_sqlite_identifier(table_name)}
+                ({column_sql})
+            VALUES ({placeholder_sql})
+            """,
+            tuple(values.values()),
+        )
+        connection.commit()
+        return cursor.lastrowid
 
 
 def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
-    table_name = "organizations"
-    ensure_table_exists(table_name)
-    columns = [
-        "identification_number",
-        "name",
-        "tax_identification_number",
-        "full_address",
-        "city",
-        "street",
-        "street_number",
-        "state",
-        "postal_code",
-    ]
-    column_sql = app_identifier_list(columns)
-    value_sql = ", ".join(access_sql_literal(organization.get(column)) for column in columns)
-
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            f"INSERT INTO {table_name} ({column_sql}) VALUES ({value_sql})",
-        )
-        created_id = fetch_created_id(cursor, table_name)
-        connection.commit()
+    ensure_table_exists("organizations")
+    created_id = create_row("organizations", organization)
 
     return {"id": created_id, **organization}
 
 
 def create_my_tender(my_tender: dict[str, Any]) -> dict[str, Any]:
-    table_name = "my_tenders"
-    ensure_table_exists(table_name)
-    columns = [
-        "item_number",
-        "item_nested_number",
-        "tender_number",
-        "tender_type",
-        "contracting_authority_id",
-    ]
-    column_sql = app_identifier_list(columns)
-    value_sql = ", ".join(access_sql_literal(my_tender.get(column)) for column in columns)
-
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            f"INSERT INTO {table_name} ({column_sql}) VALUES ({value_sql})",
-        )
-        created_id = fetch_created_id(cursor, table_name)
-        connection.commit()
+    ensure_table_exists("my_tenders")
+    created_id = create_row("my_tenders", my_tender)
 
     return {"id": created_id, **my_tender}
 
@@ -186,39 +137,37 @@ def read_my_tender(tender_id: int) -> dict[str, Any]:
     ensure_table_exists("my_tenders")
     ensure_table_exists("organizations")
 
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            f"""
+    with database_connection() as connection:
+        row = connection.execute(
+            """
             SELECT
-                mt.[id] AS tender_id,
-                mt.[item_number] AS tender_item_number,
-                mt.[item_nested_number] AS tender_item_nested_number,
-                mt.[tender_number] AS tender_tender_number,
-                mt.[tender_type] AS tender_tender_type,
-                mt.[contracting_authority_id] AS tender_contracting_authority_id,
-                mt.[created_at] AS tender_created_at,
-                mt.[updated_at] AS tender_updated_at,
-                o.[id] AS organization_id,
-                o.[identification_number] AS organization_identification_number,
-                o.[name] AS organization_name,
-                o.[tax_identification_number] AS organization_tax_identification_number,
-                o.[full_address] AS organization_full_address,
-                o.[city] AS organization_city,
-                o.[street] AS organization_street,
-                o.[street_number] AS organization_street_number,
-                o.[state] AS organization_state,
-                o.[postal_code] AS organization_postal_code,
-                o.[created_at] AS organization_created_at,
-                o.[updated_at] AS organization_updated_at
-            FROM [my_tenders] AS mt
-            LEFT JOIN [organizations] AS o
-                ON mt.[contracting_authority_id] = o.[id]
-            WHERE mt.[id] = {access_sql_literal(tender_id)}
+                mt.id AS tender_id,
+                mt.item_number AS tender_item_number,
+                mt.item_nested_number AS tender_item_nested_number,
+                mt.tender_number AS tender_tender_number,
+                mt.tender_type AS tender_tender_type,
+                mt.contracting_authority_id AS tender_contracting_authority_id,
+                mt.created_at AS tender_created_at,
+                mt.updated_at AS tender_updated_at,
+                o.id AS organization_id,
+                o.identification_number AS organization_identification_number,
+                o.name AS organization_name,
+                o.tax_identification_number AS organization_tax_identification_number,
+                o.full_address AS organization_full_address,
+                o.city AS organization_city,
+                o.street AS organization_street,
+                o.street_number AS organization_street_number,
+                o.state AS organization_state,
+                o.postal_code AS organization_postal_code,
+                o.created_at AS organization_created_at,
+                o.updated_at AS organization_updated_at
+            FROM my_tenders AS mt
+            LEFT JOIN organizations AS o
+                ON mt.contracting_authority_id = o.id
+            WHERE mt.id = ?
             """,
-        )
-        row = cursor.fetchone()
-        columns = [column[0] for column in cursor.description]
+            (tender_id,),
+        ).fetchone()
 
     if row is None:
         raise HTTPException(
@@ -226,7 +175,7 @@ def read_my_tender(tender_id: int) -> dict[str, Any]:
             detail=f"My tender not found: {tender_id}",
         )
 
-    values = dict(zip(columns, row))
+    values = dict(row)
     contracting_authority = None
     if values["organization_id"] is not None:
         contracting_authority = {
@@ -261,25 +210,16 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
     ensure_table_exists("credentials")
     password_hash = hash_password(password)
 
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        try:
-            cursor.execute(
-                f"""
-                INSERT INTO credentials
-                    (username, password_hash)
-                VALUES ({access_sql_literal(username)}, {access_sql_literal(password_hash)})
-                """,
-            )
-        except pyodbc.Error as exc:
-            if is_unique_constraint_error(exc):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Credential already exists for username: {username}",
-                ) from exc
-            raise
-        created_id = fetch_created_id(cursor, "credentials")
-        connection.commit()
+    try:
+        created_id = create_row(
+            "credentials",
+            {"username": username, "password_hash": password_hash},
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Credential already exists for username: {username}",
+        ) from exc
 
     return {"id": created_id, "username": username}
 
@@ -287,12 +227,12 @@ def create_credential(username: str, password: str) -> dict[str, Any]:
 def list_credentials() -> dict[str, str]:
     ensure_table_exists("credentials")
 
-    with access_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute("SELECT [username], [password_hash] FROM [credentials]")
-        rows = cursor.fetchall()
+    with database_connection() as connection:
+        rows = connection.execute(
+            "SELECT username, password_hash FROM credentials"
+        ).fetchall()
 
-    return {row.username: row.password_hash for row in rows}
+    return {row["username"]: row["password_hash"] for row in rows}
 
 
 def hash_password(password: str) -> str:
@@ -322,8 +262,3 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
     return secrets.compare_digest(actual_digest, expected_digest)
-
-
-def is_unique_constraint_error(exc: pyodbc.Error) -> bool:
-    message = str(exc).lower()
-    return "duplicate" in message or "unique" in message or "already exists" in message
