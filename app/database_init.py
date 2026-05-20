@@ -1,9 +1,9 @@
 from app.database import database_connection, get_database_path
 
 
-ORGANIZATIONS_TABLE = "organizations"
-MY_TENDERS_TABLE = "my_tenders"
-APPLICANT_AUTHORITIES_TABLE = "applicant_authorities"
+ORGANIZATIONS_TABLE = "organizacie"
+MY_TENDERS_TABLE = "moje_tendre"
+APPLICANT_AUTHORITIES_TABLE = "uchadzaci"
 CREDENTIALS_TABLE = "credentials"
 
 
@@ -15,26 +15,28 @@ def ensure_organizations_table() -> None:
     with database_connection() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS organizations (
+            CREATE TABLE IF NOT EXISTS organizacie (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                identification_number INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                tax_identification_number TEXT,
-                full_address TEXT,
-                city TEXT,
-                street TEXT,
-                street_number TEXT,
-                state TEXT,
-                postal_code TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ico INTEGER NOT NULL,
+                meno TEXT NOT NULL,
+                dic TEXT,
+                plna_adresa TEXT,
+                mesto TEXT,
+                ulica TEXT,
+                cislo_domu TEXT,
+                stat TEXT,
+                psc TEXT,
+                statutarny_organ TEXT,
+                statutarny_organ_funkcia TEXT,
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
         connection.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_organizations_identification_number
-            ON organizations (identification_number)
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_organizations_ico
+            ON organizacie (ico)
             """
         )
         connection.commit()
@@ -44,17 +46,27 @@ def ensure_my_tenders_table() -> None:
     with database_connection() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS my_tenders (
+            CREATE TABLE IF NOT EXISTS moje_tendre (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_number TEXT NOT NULL,
-                item_nested_number TEXT NOT NULL,
-                tender_number TEXT NOT NULL,
-                tender_type TEXT NOT NULL,
-                contracting_authority_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (contracting_authority_id)
-                    REFERENCES organizations (id)
+                cislo_opatrenia TEXT NOT NULL,
+                cislo_podopatrenia TEXT NOT NULL,
+                cislo_vyzvy TEXT NOT NULL,
+                druh_zakazky TEXT NOT NULL,
+                nazov_zakazky TEXT,
+                nazov_projektu TEXT,
+                kod_projektu TEXT,
+                predmet_zakazky TEXT,
+                rozdelenie_zakazky TEXT,
+                obstaravatel INTEGER NOT NULL,
+                lehota_na_predkladanie_ponuk DATETIME,
+                datum_otvorenia_a_vyhodnotenia_ponuk DATETIME,
+                datum_podpisu_vyzvy DATE,
+                datum_podpisu_zaznam DATE,
+                datum_podpisu_splnomocnenia DATE,
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (obstaravatel)
+                    REFERENCES organizacie (id)
             )
             """
         )
@@ -65,23 +77,23 @@ def ensure_applicant_authorities_table() -> None:
     with database_connection() as connection:
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS applicant_authorities (
+            CREATE TABLE IF NOT EXISTS uchadzaci (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                my_tender_id INTEGER NOT NULL,
-                organization_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (my_tender_id)
-                    REFERENCES my_tenders (id),
-                FOREIGN KEY (organization_id)
-                    REFERENCES organizations (id)
+                moj_tender_id INTEGER NOT NULL,
+                organizacia_id INTEGER NOT NULL,
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (moj_tender_id)
+                    REFERENCES moje_tendre (id),
+                FOREIGN KEY (organizacia_id)
+                    REFERENCES organizacie (id)
             )
             """
         )
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_applicant_authorities_tender_organization
-            ON applicant_authorities (my_tender_id, organization_id)
+            ON uchadzaci (moj_tender_id, organizacia_id)
             """
         )
         connection.commit()
@@ -95,8 +107,8 @@ def ensure_credentials_table() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )

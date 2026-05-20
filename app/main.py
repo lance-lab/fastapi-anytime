@@ -7,10 +7,6 @@ from app.auth import load_credentials_cache, require_basic_auth
 from app.config import RUN_DATABASE_INIT
 from app.database import (
     create_credential,
-    create_my_tender,
-    create_organization,
-    list_user_tables,
-    read_my_tender,
     read_table_rows,
 )
 from app.database_init import (
@@ -20,12 +16,18 @@ from app.database_init import (
     ensure_my_tenders_table,
     ensure_organizations_table,
 )
-from app.schemas import CredentialCreate, MyTenderCreate, OrganizationCreate
+from app.routers import my_tenders, organizations
+from app.schemas import CredentialCreate
 
 
 TABLE_NAME_TRANSLATIONS = {
-    "organizations": "organizations",
-    "my-tenders": "my_tenders",
+    "organizations": "organizacie",
+    "organizacie": "organizacie",
+    "my-tenders": "moje_tendre",
+    "moje-tendre": "moje_tendre",
+    "moje_tendre": "moje_tendre",
+    "applicant-authorities": "uchadzaci",
+    "uchadzaci": "uchadzaci",
 }
 
 
@@ -46,6 +48,8 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=[Depends(require_basic_auth)],
 )
+app.include_router(organizations.router)
+app.include_router(my_tenders.router)
 
 
 @app.get("/health")
@@ -53,46 +57,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/tables")
-def tables() -> dict[str, list[str]]:
-    return {"tables": list_user_tables()}
-
-
-@app.post("/organizations", status_code=201)
-def add_organization(organization: OrganizationCreate) -> dict[str, object]:
-    return create_organization(organization.model_dump())
-
-
-@app.post("/my-tenders", status_code=201)
-def add_my_tender(my_tender: MyTenderCreate) -> dict[str, object]:
-    return create_my_tender(my_tender.model_dump())
-
-
-@app.get("/my-tenders/{tender_id}")
-def get_my_tender(tender_id: int) -> dict[str, object]:
-    return read_my_tender(tender_id)
-
-
 @app.post("/credentials", status_code=201)
 def add_credential(credential: CredentialCreate) -> dict[str, object]:
     created_credential = create_credential(
-        username=credential.username,
-        password=credential.password,
+        username=credential.Username,
+        password=credential.Password,
     )
     load_credentials_cache()
     return created_credential
-
-
-@app.get("/tables/{table_name}/rows")
-def table_rows(
-    table_name: str,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
-) -> dict[str, object]:
-    resolved_table_name = TABLE_NAME_TRANSLATIONS.get(table_name, table_name)
-    rows = read_table_rows(resolved_table_name, limit)
-    return {
-        "table": resolved_table_name,
-        "requested_table": table_name,
-        "count": len(rows),
-        "rows": rows,
-    }

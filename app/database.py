@@ -10,6 +10,68 @@ from app.auth import hash_password
 from app.config import SQLITE_DB_PATH, SQLITE_DB_PATH_ENV
 
 
+ORGANIZATIONS_TABLE = "organizacie"
+MY_TENDERS_TABLE = "moje_tendre"
+APPLICANT_AUTHORITIES_TABLE = "uchadzaci"
+CREDENTIALS_TABLE = "credentials"
+
+DB_COLUMN_TRANSLATIONS = {
+    ORGANIZATIONS_TABLE: {
+        "Id": "id",
+        "Ico": "ico",
+        "Meno": "meno",
+        "Dic": "dic",
+        "PlnaAdresa": "plna_adresa",
+        "Mesto": "mesto",
+        "Ulica": "ulica",
+        "CisloDomu": "cislo_domu",
+        "Stat": "stat",
+        "Psc": "psc",
+        "StatutarnyOrgan": "statutarny_organ",
+        "StatutarnyOrganFunkcia": "statutarny_organ_funkcia",
+        "Vytvorene": "vytvorene",
+        "Updatovane": "updatovane",
+    },
+    MY_TENDERS_TABLE: {
+        "Id": "id",
+        "CisloOpatrenia": "cislo_opatrenia",
+        "CisloPodopatrenia": "cislo_podopatrenia",
+        "CisloVyzvy": "cislo_vyzvy",
+        "DruhZakazky": "druh_zakazky",
+        "NazovZakazky": "nazov_zakazky",
+        "NazovProjektu": "nazov_projektu",
+        "KodProjektu": "kod_projektu",
+        "PredmetZakazky": "predmet_zakazky",
+        "RozdelenieZakazky": "rozdelenie_zakazky",
+        "Obstaravatel": "obstaravatel",
+        "LehotaNaPredkladaniePonuk": "lehota_na_predkladanie_ponuk",
+        "DatumOtvoreniaAVyhodnoteniaPonuk": "datum_otvorenia_a_vyhodnotenia_ponuk",
+        "DatumPodpisuVyzvy": "datum_podpisu_vyzvy",
+        "DatumPodpisuZaznam": "datum_podpisu_zaznam",
+        "DatumPodpisuSplnomocnenia": "datum_podpisu_splnomocnenia",
+        "Vytvorene": "vytvorene",
+        "Updatovane": "updatovane",
+    },
+    CREDENTIALS_TABLE: {
+        "Username": "username",
+        "PasswordHash": "password_hash",
+    },
+    APPLICANT_AUTHORITIES_TABLE: {
+        "Id": "id",
+        "MojTenderId": "moj_tender_id",
+        "OrganizaciaId": "organizacia_id",
+    }
+}
+
+API_FIELD_TRANSLATIONS = {
+    table_name: {
+        db_column: api_field
+        for api_field, db_column in column_translations.items()
+    }
+    for table_name, column_translations in DB_COLUMN_TRANSLATIONS.items()
+}
+
+
 def resolve_database_path() -> Path:
     configured_path = os.getenv(SQLITE_DB_PATH_ENV, SQLITE_DB_PATH)
     if not configured_path:
@@ -49,21 +111,6 @@ def quote_sqlite_identifier(identifier: str) -> str:
     return f'"{identifier.replace(chr(34), chr(34) + chr(34))}"'
 
 
-def list_user_tables() -> list[str]:
-    with database_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-                AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-            """
-        ).fetchall()
-
-    return [row["name"] for row in rows]
-
-
 def table_exists(table_name: str) -> bool:
     with database_connection() as connection:
         row = connection.execute(
@@ -99,8 +146,47 @@ def read_table_rows(table_name: str, limit: int = 100) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def read_table_row_by_id(table_name: str, row_id: int) -> dict[str, Any]:
+    ensure_table_exists(table_name)
+
+    with database_connection() as connection:
+        row = connection.execute(
+            f"""
+            SELECT *
+            FROM {quote_sqlite_identifier(table_name)}
+            WHERE id = ?
+            """,
+            (row_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{table_name} row not found: {row_id}",
+        )
+
+    return dict(row)
+
+
+def translate_to_db_columns(table_name: str, values: dict[str, Any]) -> dict[str, Any]:
+    column_translations = DB_COLUMN_TRANSLATIONS.get(table_name, {})
+    return {
+        column_translations.get(column, column): value
+        for column, value in values.items()
+    }
+
+
+def translate_to_api_fields(table_name: str, values: dict[str, Any]) -> dict[str, Any]:
+    field_translations = API_FIELD_TRANSLATIONS.get(table_name, {})
+    return {
+        field_translations.get(column, column): value
+        for column, value in values.items()
+    }
+
+
 def create_row(table_name: str, values: dict[str, Any]) -> int:
-    columns = list(values)
+    db_values = translate_to_db_columns(table_name, values)
+    columns = list(db_values)
     column_sql = ", ".join(quote_sqlite_identifier(column) for column in columns)
     placeholder_sql = ", ".join("?" for _ in columns)
 
@@ -112,10 +198,38 @@ def create_row(table_name: str, values: dict[str, Any]) -> int:
                     ({column_sql})
                 VALUES ({placeholder_sql})
                 """,
-                tuple(values.values()),
+                tuple(db_values.values()),
             )
             connection.commit()
             return cursor.lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise constraint_error_response(table_name, exc) from exc
+
+
+def update_row(table_name: str, row_id: int, values: dict[str, Any]) -> None:
+    read_table_row_by_id(table_name, row_id)
+    db_values = translate_to_db_columns(table_name, values)
+    if not db_values:
+        return
+
+    set_sql = ", ".join(
+        f"{quote_sqlite_identifier(column)} = ?"
+        for column in db_values
+    )
+    if "updatovane" not in db_values:
+        set_sql = f"{set_sql}, updatovane = CURRENT_TIMESTAMP"
+
+    try:
+        with database_connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE {quote_sqlite_identifier(table_name)}
+                SET {set_sql}
+                WHERE id = ?
+                """,
+                (*db_values.values(), row_id),
+            )
+            connection.commit()
     except sqlite3.IntegrityError as exc:
         raise constraint_error_response(table_name, exc) from exc
 
@@ -161,90 +275,101 @@ def constraint_error_response(table_name: str, exc: sqlite3.IntegrityError) -> H
 
 
 def create_organization(organization: dict[str, Any]) -> dict[str, Any]:
-    ensure_table_exists("organizations")
-    created_id = create_row("organizations", organization)
+    ensure_table_exists(ORGANIZATIONS_TABLE)
+    created_id = create_row(ORGANIZATIONS_TABLE, organization)
+    db_organization = read_table_row_by_id(ORGANIZATIONS_TABLE, created_id)
 
-    return {"id": created_id, **organization}
+    return translate_to_api_fields(ORGANIZATIONS_TABLE, db_organization)
+
+
+def read_organization(organization_id: int) -> dict[str, Any]:
+    ensure_table_exists(ORGANIZATIONS_TABLE)
+    db_organization = read_table_row_by_id(ORGANIZATIONS_TABLE, organization_id)
+
+    return translate_to_api_fields(ORGANIZATIONS_TABLE, db_organization)
+
+
+def read_tender_applicants(tender_id: int) -> list[dict[str, Any]]:
+    ensure_table_exists(APPLICANT_AUTHORITIES_TABLE)
+    ensure_table_exists(ORGANIZATIONS_TABLE)
+
+    with database_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, organizacia_id
+            FROM {quote_sqlite_identifier(APPLICANT_AUTHORITIES_TABLE)}
+            WHERE moj_tender_id = ?
+            ORDER BY id
+            """,
+            (tender_id,),
+        ).fetchall()
+
+    return [
+        {
+            "Id": row["id"],
+            "Organizacia": read_organization(row["organizacia_id"]),
+        }
+        for row in rows
+    ]
 
 
 def create_my_tender(my_tender: dict[str, Any]) -> dict[str, Any]:
-    ensure_table_exists("my_tenders")
-    created_id = create_row("my_tenders", my_tender)
+    ensure_table_exists(MY_TENDERS_TABLE)
+    created_id = create_row(MY_TENDERS_TABLE, my_tender)
+    db_my_tender = read_table_row_by_id(MY_TENDERS_TABLE, created_id)
 
-    return {"id": created_id, **my_tender}
+    return translate_to_api_fields(MY_TENDERS_TABLE, db_my_tender)
+
+
+def update_my_tender(tender_id: int, my_tender: dict[str, Any]) -> dict[str, Any]:
+    update_row(MY_TENDERS_TABLE, tender_id, my_tender)
+    db_my_tender = read_table_row_by_id(MY_TENDERS_TABLE, tender_id)
+
+    return translate_to_api_fields(MY_TENDERS_TABLE, db_my_tender)
 
 
 def read_my_tender(tender_id: int) -> dict[str, Any]:
-    ensure_table_exists("my_tenders")
-    ensure_table_exists("organizations")
+    ensure_table_exists(MY_TENDERS_TABLE)
+    db_my_tender = read_table_row_by_id(MY_TENDERS_TABLE, tender_id)
+    my_tender = translate_to_api_fields(MY_TENDERS_TABLE, db_my_tender)
+    my_tender["Obstaravatel"] = read_organization(my_tender["Obstaravatel"])
+    my_tender["Uchadzaci"] = read_tender_applicants(tender_id)
 
-    with database_connection() as connection:
-        row = connection.execute(
-            """
-            SELECT
-                mt.id AS tender_id,
-                mt.item_number AS tender_item_number,
-                mt.item_nested_number AS tender_item_nested_number,
-                mt.tender_number AS tender_tender_number,
-                mt.tender_type AS tender_tender_type,
-                mt.contracting_authority_id AS tender_contracting_authority_id,
-                mt.created_at AS tender_created_at,
-                mt.updated_at AS tender_updated_at,
-                o.id AS organization_id,
-                o.identification_number AS organization_identification_number,
-                o.name AS organization_name,
-                o.tax_identification_number AS organization_tax_identification_number,
-                o.full_address AS organization_full_address,
-                o.city AS organization_city,
-                o.street AS organization_street,
-                o.street_number AS organization_street_number,
-                o.state AS organization_state,
-                o.postal_code AS organization_postal_code,
-                o.created_at AS organization_created_at,
-                o.updated_at AS organization_updated_at
-            FROM my_tenders AS mt
-            LEFT JOIN organizations AS o
-                ON mt.contracting_authority_id = o.id
-            WHERE mt.id = ?
-            """,
-            (tender_id,),
-        ).fetchone()
+    return my_tender
 
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"My tender not found: {tender_id}",
-        )
+def create_tender_applicant(tender_id: int, organization_id: int) -> int:
+    ensure_table_exists(APPLICANT_AUTHORITIES_TABLE)
+    return create_row(
+        APPLICANT_AUTHORITIES_TABLE,
+        {"MojTenderId": tender_id, "OrganizaciaId": organization_id},
+    )
 
-    values = dict(row)
-    contracting_authority = None
-    if values["organization_id"] is not None:
-        contracting_authority = {
-            "id": values["organization_id"],
-            "identification_number": values["organization_identification_number"],
-            "name": values["organization_name"],
-            "tax_identification_number": values["organization_tax_identification_number"],
-            "full_address": values["organization_full_address"],
-            "city": values["organization_city"],
-            "street": values["organization_street"],
-            "street_number": values["organization_street_number"],
-            "state": values["organization_state"],
-            "postal_code": values["organization_postal_code"],
-            "created_at": values["organization_created_at"],
-            "updated_at": values["organization_updated_at"],
-        }
 
-    return {
-        "id": values["tender_id"],
-        "item_number": values["tender_item_number"],
-        "item_nested_number": values["tender_item_nested_number"],
-        "tender_number": values["tender_tender_number"],
-        "tender_type": values["tender_tender_type"],
-        "contracting_authority_id": values["tender_contracting_authority_id"],
-        "contracting_authority": contracting_authority,
-        "created_at": values["tender_created_at"],
-        "updated_at": values["tender_updated_at"],
-    }
+def replace_tender_applicants(tender_id: int, organization_ids: list[int]) -> None:
+    read_table_row_by_id(MY_TENDERS_TABLE, tender_id)
+    ensure_table_exists(APPLICANT_AUTHORITIES_TABLE)
+
+    try:
+        with database_connection() as connection:
+            connection.execute(
+                f"""
+                DELETE FROM {quote_sqlite_identifier(APPLICANT_AUTHORITIES_TABLE)}
+                WHERE moj_tender_id = ?
+                """,
+                (tender_id,),
+            )
+            for organization_id in organization_ids:
+                connection.execute(
+                    f"""
+                    INSERT INTO {quote_sqlite_identifier(APPLICANT_AUTHORITIES_TABLE)}
+                        (moj_tender_id, organizacia_id)
+                    VALUES (?, ?)
+                    """,
+                    (tender_id, organization_id),
+                )
+            connection.commit()
+    except sqlite3.IntegrityError as exc:
+        raise constraint_error_response(APPLICANT_AUTHORITIES_TABLE, exc) from exc
 
 
 def create_credential(username: str, password: str) -> dict[str, Any]:
