@@ -4,6 +4,8 @@ from app.database import database_connection, get_database_path
 ORGANIZATIONS_TABLE = "organizacie"
 MY_TENDERS_TABLE = "moje_tendre"
 APPLICANT_AUTHORITIES_TABLE = "uchadzaci"
+ATTRIBUTE_LIST_TABLE = "zoznam_atributov"
+ADDITIONAL_ATTRIBUTES_TABLE = "dalsie_atributy"
 CREDENTIALS_TABLE = "credentials"
 
 
@@ -94,6 +96,61 @@ def ensure_applicant_authorities_table() -> None:
             """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_applicant_authorities_tender_organization
             ON uchadzaci (moj_tender_id, organizacia_id)
+            """
+        )
+        connection.commit()
+
+
+def ensure_attribute_list_table() -> None:
+    with database_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS zoznam_atributov (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nazov TEXT NOT NULL UNIQUE,
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.commit()
+
+
+def ensure_additional_attributes_table() -> None:
+    with database_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dalsie_atributy (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nazov TEXT NOT NULL,
+                hodnota TEXT,
+                moj_tender_id INTEGER,
+                uchadzac_id INTEGER,
+                vytvorene TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updatovane TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CHECK (
+                    (moj_tender_id IS NOT NULL AND uchadzac_id IS NULL)
+                    OR (moj_tender_id IS NULL AND uchadzac_id IS NOT NULL)
+                ),
+                FOREIGN KEY (moj_tender_id)
+                    REFERENCES moje_tendre (id),
+                FOREIGN KEY (uchadzac_id)
+                    REFERENCES uchadzaci (id),
+                FOREIGN KEY (nazov)
+                    REFERENCES zoznam_atributov (nazov)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_dalsie_atributy_moj_tender
+            ON dalsie_atributy (moj_tender_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_dalsie_atributy_uchadzac
+            ON dalsie_atributy (uchadzac_id)
             """
         )
         connection.commit()

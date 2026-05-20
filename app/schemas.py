@@ -34,9 +34,34 @@ class OrganizationCreate(BaseModel):
     StatutarnyOrganFunkcia: Optional[str] = None
 
 
+class AdditionalAttributeResponse(BaseModel):
+    Id: int
+    Nazov: str
+    Hodnota: str | None = None
+    Vytvorene: str
+    Updatovane: str
+
+
+class AdditionalAttributeCreate(BaseModel):
+    Nazov: str = Field(min_length=1)
+    Hodnota: Optional[str] = None
+
+
+class AttributeListResponse(BaseModel):
+    Id: int
+    Nazov: str
+    Vytvorene: str
+    Updatovane: str
+
+
+class AttributeListCreate(BaseModel):
+    Nazov: str = Field(min_length=1)
+
+
 class TenderApplicant(BaseModel):
     Id: int
     Organizacia: OrganizationResponse
+    DalsieAtributy: list[AdditionalAttributeResponse]
 
 
 class MyTendersResponse(BaseModel):
@@ -50,7 +75,7 @@ class MyTendersResponse(BaseModel):
     KodProjektu: str | None = None
     PredmetZakazky: str | None = None
     RozdelenieZakazky: str | None = None
-    Obstaravatel: int
+    ObstaravatelId: int
     LehotaNaPredkladaniePonuk: str | None = None
     DatumOtvoreniaAVyhodnoteniaPonuk: str | None = None
     DatumPodpisuVyzvy: str | None = None
@@ -71,8 +96,10 @@ class MyTenderDetailsResponse(BaseModel):
     KodProjektu: str | None = None
     PredmetZakazky: str | None = None
     RozdelenieZakazky: str | None = None
+    ObstaravatelId: int
     Obstaravatel: OrganizationResponse
     Uchadzaci: list[TenderApplicant]
+    DalsieAtributy: list[AdditionalAttributeResponse]
     LehotaNaPredkladaniePonuk: str | None = None
     DatumOtvoreniaAVyhodnoteniaPonuk: str | None = None
     DatumPodpisuVyzvy: str | None = None
@@ -88,6 +115,7 @@ class TenderApplicantOrganizationCreate(BaseModel):
 
 class TenderApplicantCreate(BaseModel):
     Organizacia: TenderApplicantOrganizationCreate
+    DalsieAtributy: list[AdditionalAttributeCreate] = Field(default_factory=list)
 
 
 class MyTenderCreate(BaseModel):
@@ -100,12 +128,13 @@ class MyTenderCreate(BaseModel):
     KodProjektu: Optional[str] = None
     PredmetZakazky: Optional[str] = None
     RozdelenieZakazky: Optional[str] = None
-    Obstaravatel: int
+    ObstaravatelId: int
     LehotaNaPredkladaniePonuk: Optional[str] = None
     DatumOtvoreniaAVyhodnoteniaPonuk: Optional[str] = None
     DatumPodpisuVyzvy: Optional[str] = None
     DatumPodpisuZaznam: Optional[str] = None
     DatumPodpisuSplnomocnenia: Optional[str] = None
+    DalsieAtributy: list[AdditionalAttributeCreate] = Field(default_factory=list)
     Uchadzaci: list[TenderApplicantCreate] = Field(default_factory=list)
 
 
@@ -119,12 +148,13 @@ class MyTenderUpdate(BaseModel):
     KodProjektu: Optional[str] = None
     PredmetZakazky: Optional[str] = None
     RozdelenieZakazky: Optional[str] = None
-    Obstaravatel: Optional[int] = None
+    ObstaravatelId: Optional[int] = None
     LehotaNaPredkladaniePonuk: Optional[str] = None
     DatumOtvoreniaAVyhodnoteniaPonuk: Optional[str] = None
     DatumPodpisuVyzvy: Optional[str] = None
     DatumPodpisuZaznam: Optional[str] = None
     DatumPodpisuSplnomocnenia: Optional[str] = None
+    DalsieAtributy: Optional[list[AdditionalAttributeCreate]] = None
     Uchadzaci: Optional[list[TenderApplicantCreate]] = None
 
 

@@ -23,9 +23,15 @@ def require_basic_auth(
     credentials: Annotated[HTTPBasicCredentials | None, Depends(security)],
 ) -> str:
     if (
+        request.method == "GET"
+        and request.url.path in {"/api/admin/status", "/api/healthz"}
+    ):
+        return "__public__"
+
+    if (
         not credentials_cache
         and request.method == "POST"
-        and request.url.path == "/credentials"
+        and request.url.path == "/api/admin/credentials"
     ):
         return "__bootstrap__"
 

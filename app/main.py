@@ -5,19 +5,17 @@ from fastapi import Depends, FastAPI, Query
 
 from app.auth import load_credentials_cache, require_basic_auth
 from app.config import RUN_DATABASE_INIT
-from app.database import (
-    create_credential,
-    read_table_rows,
-)
+from app.database import read_table_rows
 from app.database_init import (
+    ensure_additional_attributes_table,
     ensure_applicant_authorities_table,
+    ensure_attribute_list_table,
     ensure_credentials_table,
     ensure_database_file,
     ensure_my_tenders_table,
     ensure_organizations_table,
 )
-from app.routers import my_tenders, organizations
-from app.schemas import CredentialCreate
+from app.routers import admin, my_tenders, organizations
 
 
 TABLE_NAME_TRANSLATIONS = {
@@ -38,6 +36,8 @@ async def lifespan(app: FastAPI):
         ensure_organizations_table()
         ensure_my_tenders_table()
         ensure_applicant_authorities_table()
+        ensure_attribute_list_table()
+        ensure_additional_attributes_table()
         ensure_credentials_table()
     load_credentials_cache()
     yield
@@ -50,18 +50,11 @@ app = FastAPI(
 )
 app.include_router(organizations.router)
 app.include_router(my_tenders.router)
+app.include_router(admin.router)
 
 
-@app.get("/health")
-def health() -> dict[str, str]:
+@app.get("/api/healthz")
+def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/credentials", status_code=201)
-def add_credential(credential: CredentialCreate) -> dict[str, object]:
-    created_credential = create_credential(
-        username=credential.Username,
-        password=credential.Password,
-    )
-    load_credentials_cache()
-    return created_credential
